@@ -6,18 +6,38 @@ import matplotlib.pyplot as plt
 import glob
 
 print(">>> Loading Data...")
-# Use the embeddings we actually created (10k test sample)
-parquet_files = glob.glob("embeddings_10k_test/*.parquet")
+# Use the embeddings created by 02_embed.py
+parquet_files = glob.glob("embeddings_final/*.parquet")
 if not parquet_files:
-    raise FileNotFoundError("No parquet files found in embeddings_10k_test. Did Step 2 finish?")
-table = pq.read_table(parquet_files[0])
-X = np.stack(table["embedding"].to_numpy())
-y = table["label"].to_numpy()
+    raise FileNotFoundError("No parquet files found in embeddings_final. Did Step 2 finish?")
+
+# Read all files and combine them
+dfs = []
+for file in parquet_files:
+    if not file.endswith("_SUCCESS"):  # Skip metadata file
+        table = pq.read_table(file)
+        df = table.to_pandas()
+        dfs.append(df)
+
+if not dfs:
+    raise FileNotFoundError("No valid parquet files found")
+
+import pandas as pd
+combined_df = pd.concat(dfs, ignore_index=True)
+X = np.stack(combined_df["features"].values)
+y = combined_df["label"].values
 
 # 1. Filter: Analyze ONLY the Jailbreaks
 # We don't care about clustering safe conversations.
 jailbreak_vectors = X[y == 1]
 print(f"Analyzing {len(jailbreak_vectors)} jailbreak attempts...")
+
+if len(jailbreak_vectors) == 0:
+    print("ERROR: No jailbreak samples found! Check that 01_ingest.py labeled data correctly.")
+    exit(1)
+
+if len(jailbreak_vectors) < 20:
+    print(f"WARNING: Only {len(jailbreak_vectors)} jailbreaks found. Clustering may not be meaningful.")
 
 # 2. PCA Compression (Speed Hack)
 # Reduce 384 dims -> 50 dims (retains ~95% variance)

@@ -1,50 +1,42 @@
-import ray
-import numpy as np
+# 02_embed.py
+import os
+import sys
+from pyspark.sql import SparkSession
+from sentence_transformers import SentenceTransformer
+import pandas as pd
 
-# --- FIX: LOGICAL GPU HACK ---
-# We tell Ray we have 4 "tickets" for the GPU. 
-# This bypasses the fractional (0.25) math that is causing the hang.
-ray.init(num_gpus=4, ignore_reinit_error=True)
-
-class Embedder:
-    def __init__(self):
-        import torch
-        from sentence_transformers import SentenceTransformer
-        
-        # 1. Detect Apple Silicon GPU
-        self.device = "mps" if torch.backends.mps.is_available() else "cpu"
-        print(f"Worker initialized on device: {self.device}")
-        
-        # 2. Load Model
-        self.model = SentenceTransformer('all-MiniLM-L6-v2', device=self.device)
-        self.model.half()
-
-    def __call__(self, batch):
-        embeddings = self.model.encode(
-            batch["text"].tolist(),
-            batch_size=256,
-            device=self.device,
-            convert_to_numpy=True,
-            normalize_embeddings=True
-        )
-        return {"embedding": embeddings, "label": batch["label"]}
+spark = SparkSession.builder \
+    .appName("JailbreakEmbedding") \
+    .config("spark.driver.memory", "8g") \
+    .config("spark.executor.memory", "4g") \
+    .getOrCreate()
 
 print(">>> Loading processed data...")
-ds = ray.data.read_parquet("processed_data")
+df = spark.read.parquet("processed_data")
 
-# --- TEST LIMIT ---
-print(">>> LIMITING TO 10,000 ROWS FOR TESTING...")
-ds = ds.limit(300_000)
-# ------------------
+# Repartition ensures we use all your cores (e.g., 10 partitions for 10 cores)
+df = df.repartition(10)
 
-print(f">>> Starting Distributed Embedding on M4 Neural Engine...")
-embedding_ds = ds.map_batches(
-    Embedder,  
-    compute=ray.data.ActorPoolStrategy(size=4),
-    num_gpus=1, # Each worker takes 1 "Logical Ticket"
-    batch_size=1024
-)
+def embed_partition(iterator):
+    # This runs INSIDE the worker process.
+    # We load the model once per partition (Efficient)
+    print("--- Initializing Model in Worker ---")
+    model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
+    
+    for row in iterator:
+        # Encode returns a numpy array, we convert to list for Spark
+        vector = model.encode(row.text, normalize_embeddings=True).tolist()
+        yield (vector, row.label)
+
+print(">>> Starting Distributed Embedding (MapPartitions)...")
+
+# Apply the function to each partition
+rdd = df.rdd.mapPartitions(embed_partition)
+
+# Convert back to DataFrame
+# Schema: features (List of Floats), label (Int)
+df_embeddings = rdd.toDF(["features", "label"])
 
 print(">>> Saving Embeddings...")
-embedding_ds.write_parquet("embeddings_10k_test")
-print(">>> Done. Vectors saved to ./embeddings_10k_test")
+df_embeddings.write.mode("overwrite").parquet("embeddings_final")
+print(">>> Done.")
