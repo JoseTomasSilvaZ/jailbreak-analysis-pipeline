@@ -38,3 +38,5 @@ print(f"\nResult: {label}")
 print(f"Jailbreak probability: {probs[1]:.1%}")
 print(f"Safe probability: {probs[0]:.1%}")
 
+
+

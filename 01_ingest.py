@@ -38,6 +38,7 @@ pdf = pd.concat([pdf_train, pdf_test], ignore_index=True)
 print(f"    ✓ Loaded {len(pdf)} samples")
 
 # Clean up
+pdf = pdf.sample(n=10000, random_state=42).reset_index(drop=True)
 pdf = pdf.dropna(subset=["text"])
 pdf["text"] = pdf["text"].astype(str)
 pdf = pdf[pdf["text"].str.len() > 5]
