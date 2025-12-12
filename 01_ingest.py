@@ -2,70 +2,99 @@ import os
 import sys
 import pandas as pd
 from pyspark.sql import SparkSession
+from datasets import load_dataset
 
-# Initialize Spark
+# Inicializar Spark
 spark = SparkSession.builder \
-    .appName("JailbreakIngestion_BigData") \
+    .appName("Ingesta_Jailbreak_BigData") \
     .config("spark.driver.memory", "8g") \
     .getOrCreate()
 
-print(">>> Loading Datasets...")
+print(">>> INICIANDO INGESTA (Jayavibhav + Imoxto)...")
 
+# --- Función Auxiliar para Estandarizar (Esta función arregla el error de Imoxto) ---
+def estandarizar_df(df, nombre_fuente):
+    print(f"   -> Procesando {nombre_fuente} (Columnas originales: {list(df.columns)})...")
+    
+    # 1. Normalizar columna de TEXTO
+    candidatos_texto = ['prompt', 'data', 'sentence', 'text_prompts', 'question']
+    for col in candidatos_texto:
+        if col in df.columns:
+            df = df.rename(columns={col: 'text'})
+            break
+            
+    # 2. Normalizar columna de ETIQUETA (LABEL)
+    # Buscamos variantes como 'Label', 'labels', 'ground_truth'
+    candidatos_label = ['Label', 'labels', 'ground_truth', 'class', 'target', 'is_jailbreak']
+    for col in candidatos_label:
+        if col in df.columns:
+            df = df.rename(columns={col: 'label'})
+            break
+
+    # 3. Validación
+    if 'text' not in df.columns or 'label' not in df.columns:
+        print(f"      [SALTAR] No se encontró 'text' o 'label' en {nombre_fuente}")
+        return pd.DataFrame()
+
+    # 4. Limpiar tipos de datos
+    # Mapear strings 'safe'/'injection' a 0/1 si es necesario
+    if df['label'].dtype == 'object':
+        mapeo = {'safe': 0, 'benign': 0, 'injection': 1, 'jailbreak': 1, 'unsafe': 1}
+        df['label'] = df['label'].map(mapeo).fillna(df['label'])
+    
+    # Asegurar que sean números enteros
+    df['label'] = pd.to_numeric(df['label'], errors='coerce').fillna(0).astype(int)
+    df['text'] = df['text'].astype(str)
+    
+    # Seleccionar solo lo que nos importa
+    df = df[['text', 'label']]
+    df['source'] = nombre_fuente
+    return df
+
+# --- 1. JAYAVIBHAV ---
+print("\n1. Descargando jayavibhav/prompt-injection-safety...")
 try:
-    from datasets import load_dataset
-except ImportError:
-    import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "datasets"])
-    from datasets import load_dataset
+    df1 = load_dataset("jayavibhav/prompt-injection-safety", split="train").to_pandas()
+    df1 = estandarizar_df(df1, "jayavibhav")
+except Exception as e:
+    print(f"Error cargando Jayavibhav: {e}")
+    df1 = pd.DataFrame()
 
-# --- DATASET 1: Jayavibhav (El original) ---
-print("1. Downloading jayavibhav/prompt-injection-safety....")
-ds1 = load_dataset("jayavibhav/prompt-injection-safety", split="train")
-df1 = ds1.to_pandas()
-# Aseguramos nombres de columnas estándar
-df1 = df1[["text", "label"]] 
+# --- 2. IMOXTO ---
+print("\n2. Descargando imoxto/prompt_injection_cleaned_dataset-v2...")
+try:
+    df2 = load_dataset("imoxto/prompt_injection_cleaned_dataset-v2", split="train").to_pandas()
+    # Usamos la función estandarizar para arreglar el nombre de la columna 'labels'
+    df2 = estandarizar_df(df2, "imoxto")
+except Exception as e:
+    print(f"Error cargando Imoxto: {e}")
+    df2 = pd.DataFrame()
 
-# --- DATASET 2: Imoxto (El nuevo limpio) ---
-print("2. Downloading imoxto/prompt_injection_cleaned_dataset-v2...")
-# Nota: A veces los datasets tienen splits diferentes, probamos 'train'
-ds2 = load_dataset("imoxto/prompt_injection_cleaned_dataset-v2", split="train")
-df2 = ds2.to_pandas()
-# Renombrar columnas si es necesario (inspecciona si falla)
-# Asumimos que también trae 'text' y 'label'. Si trae 'prompt', cambiamos:
-if 'prompt' in df2.columns:
-    df2 = df2.rename(columns={'prompt': 'text'})
-df2 = df2[["text", "label"]]
+# --- FUSIÓN DE DATOS ---
+print("\n>>> FUSIONANDO DATASETS (MERGE)...")
+dfs = [d for d in [df1, df2] if not d.empty]
 
-print(f"   -> Dataset 1 size: {len(df1)}")
-print(f"   -> Dataset 2 size: {len(df2)}")
+if not dfs:
+    print("ERROR CRÍTICO: No se cargaron datos.")
+    sys.exit(1)
 
-# --- FUSIÓN (MERGE) ---
-print(">>> Merging datasets...")
-pdf = pd.concat([df1, df2], ignore_index=True)
+pdf = pd.concat(dfs, ignore_index=True)
 
-# Limpieza General
+# Limpieza Final
 pdf = pdf.dropna(subset=["text"])
-pdf["text"] = pdf["text"].astype(str)
 pdf = pdf[pdf["text"].str.len() > 5]
-pdf = pdf.drop_duplicates(subset=["text"]) # Eliminamos duplicados entre ambos sets
+pdf = pdf.drop_duplicates(subset=["text"]) 
 
-# Balanceo (Opcional: Si quieres usar TODO, comenta la línea de sample)
-# Para Big Data real, intentemos usar todo lo posible, o un sample más grande
-if len(pdf) > 20000:
-    print(f"Sampling 20,000 examples from total of {len(pdf)}...")
-    pdf = pdf.sample(n=20000, random_state=42).reset_index(drop=True)
-else:
-    print(f"Using full combined dataset: {len(pdf)} samples")
+print(f"\n>>> ESTADÍSTICAS DEL DATASET FINAL:")
+print(f"    Total de Muestras: {len(pdf)}")
+print(f"    Fuentes: {pdf['source'].unique()}")
+print(f"    Ataques (Label 1): {pdf['label'].sum()} ({pdf['label'].mean():.1%})")
+print(f"    Seguros (Label 0): {len(pdf) - pdf['label'].sum()}")
 
-print(f"\n>>> Final Dataset Statistics:")
-print(f"    Total samples: {len(pdf)}")
-print(f"    Jailbreaks (1): {pdf['label'].sum()} ({pdf['label'].mean():.1%})")
-print(f"    Safe (0): {(pdf['label'] == 0).sum()}")
-
-# Guardar en Parquet (Spark maneja la escritura optimizada)
-print("\n>>> Saving to Parquet...")
+# Guardar
+print("\n>>> Guardando en formato Parquet...")
 df_final = spark.createDataFrame(pdf)
-# Reparticionamos a 1 para tener un solo archivo o pocos archivos grandes
-df_final.repartition(1).write.mode("overwrite").parquet("processed_data")
+# Repartimos en 4 archivos para aprovechar tus núcleos
+df_final.repartition(4).write.mode("overwrite").parquet("processed_data")
 
-print(">>> Ingestion Complete! Ready for Step 2 (Embedding).")
+print(">>> ¡Ingesta Completa! Ahora ejecuta el paso 02_embed.py")
