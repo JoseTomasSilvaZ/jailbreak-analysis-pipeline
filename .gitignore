@@ -3,3 +3,4 @@ processed_data/*
 lmsys_raw
 jailbreak_detector.json
 *.png
+venv

@@ -4,80 +4,77 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, roc_auc_score
+import glob
+import pyarrow.parquet as pq
 
-# --- CONFIG ---
-# Point this to the folder created by Step 2
+# --- CONFIGURACIÓN ---
 INPUT_FOLDER = "embeddings_final"
-# ----------------
+MODEL_OUTPUT = "jailbreak_detector.json"
+# Peso manual: 10.0 fuerza al modelo a ser muy sensible a ataques (High Recall)
+# Esto reduce drásticamente los Falsos Negativos (ataques que pasan).
+PARANOID_WEIGHT = 10.0 
+# ---------------------
 
 print(f">>> Loading Embeddings from {INPUT_FOLDER}...")
-try:
-    import glob
-    import pyarrow.parquet as pq
 
-    # Read all parquet files and combine them
+try:
+    # 1. Cargar Datos
     parquet_files = glob.glob(f"{INPUT_FOLDER}/*.parquet")
     if not parquet_files:
         raise FileNotFoundError(f"No parquet files found in {INPUT_FOLDER}")
 
-    # Read all files into a list of dataframes, then concatenate
     dfs = []
     for file in parquet_files:
-        if not file.endswith("_SUCCESS"):  # Skip metadata file
-            table = pq.read_table(file)
-            df = table.to_pandas()
-            dfs.append(df)
+        if not file.endswith("_SUCCESS"):
+            try:
+                table = pq.read_table(file)
+                df = table.to_pandas()
+                dfs.append(df)
+            except Exception as e:
+                print(f"Skipping corrupt file {file}: {e}")
 
     if not dfs:
         raise FileNotFoundError("No valid parquet files found")
 
-    # Concatenate all dataframes
     combined_df = pd.concat(dfs, ignore_index=True)
 
-    # Extract embeddings and labels
+    # 2. Limpieza de Datos (Solo Binario)
+    # Eliminamos cualquier etiqueta que no sea 0 (Safe) o 1 (Jailbreak)
+    print(f"Original shape: {combined_df.shape}")
+    combined_df = combined_df[combined_df['label'].isin([0, 1])]
+    print(f"Filtered shape (Binary 0/1 only): {combined_df.shape}")
+
     X = np.stack(combined_df["features"].values)
     y = combined_df["label"].values
 
 except Exception as e:
-    print(f"ERROR: Could not find data in {INPUT_FOLDER}. Did Step 2 finish?")
-    raise e
-
-print(f"Data Shape: {X.shape}")
-print(f"Jailbreak Count: {sum(y)} ({sum(y)/len(y):.2%})")
-
-# 1. Split Data
-# Use stratified split only if we have enough samples of both classes
-min_class_count = min(sum(y), len(y) - sum(y))
-if min_class_count >= 2:
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, stratify=y, random_state=42
-    )
-else:
-    print("WARNING: Not enough samples in minority class for stratified split. Using random split.")
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
-    )
-
-# 2. Calculate Class Weight (Crucial for Imbalance)
-# If 0 jailbreaks exist in the sample, we cannot train a classifier
-if sum(y) == 0:
-    print("ERROR: No positive samples (jailbreaks) found in the dataset!")
-    print("This usually means the labeling in 01_ingest.py failed.")
-    print("Please check the ingestion pipeline and re-run.")
+    print(f"ERROR: {e}")
     sys.exit(1)
 
-ratio = (len(y) - sum(y)) / sum(y)
+# Estadísticas
+jailbreak_count = sum(y)
+total_count = len(y)
+print(f"Jailbreak Count (Label 1): {jailbreak_count} ({jailbreak_count/total_count:.2%})")
 
-print(f"Using scale_pos_weight: {ratio:.2f}")
+if jailbreak_count < 10:
+    print("ERROR: Not enough jailbreak samples to train!")
+    sys.exit(1)
 
-# 3. Train XGBoost
-print(">>> Training Classifier on M4 CPU...")
+# 3. Split Data (Estratificado para mantener la proporción)
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, stratify=y, random_state=42
+)
+
+# 4. Entrenamiento (XGBoost)
+print(f">>> Training Classifier with PARANOID_WEIGHT={PARANOID_WEIGHT}...")
+print("(This prioritizes detecting attacks over avoiding false alarms)")
+
 model = xgb.XGBClassifier(
     n_estimators=1000,
     learning_rate=0.05,
-    max_depth=6,
-    scale_pos_weight=ratio, 
-    tree_method='hist', 
+    max_depth=6,            # Profundidad media para evitar overfitting
+    scale_pos_weight=PARANOID_WEIGHT, # <--- LA CLAVE DEL MODO PARANOICO
+    tree_method='hist',     # Optimizado para CPU rápida
     eval_metric='auc',
     early_stopping_rounds=50,
     n_jobs=-1 
@@ -85,18 +82,18 @@ model = xgb.XGBClassifier(
 
 model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=100)
 
-# 4. Evaluate
-print(">>> Evaluating...")
+# 5. Evaluación
+print("\n>>> Evaluating Final Model...")
 preds = model.predict(X_test)
 probs = model.predict_proba(X_test)[:, 1]
 
-# Handle edge case where sample is too small to have both classes
-try:
-    print(classification_report(y_test, preds))
-    print(f"AUC-ROC Score: {roc_auc_score(y_test, probs):.4f}")
-except Exception as e:
-    print("Metrics skipped (Sample might be too small/homogenous).")
+# Reporte detallado
+print(classification_report(y_test, preds, target_names=["Safe", "Jailbreak"]))
+auc = roc_auc_score(y_test, probs)
+print(f"AUC-ROC Score: {auc:.4f}")
 
-# Save model
-model.save_model("jailbreak_detector.json")
-print(">>> Model saved to 'jailbreak_detector.json'")
+# 6. Guardado Seguro
+# Usamos get_booster() para compatibilidad con versiones nuevas de sklearn/xgboost
+model.get_booster().save_model(MODEL_OUTPUT)
+print(f"\n>>> Model saved successfully to '{MODEL_OUTPUT}'")
+print(">>> Ready for testing!")
