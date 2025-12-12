@@ -1,39 +1,44 @@
 import os
 import sys
-# --- FIX CRÍTICO: Evita que Spark y HuggingFace se bloqueen mutuamente ---
+import time # Necesario para la pausa de cortesía
+# Desactivar paralelismo de tokenizers para evitar bloqueos
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 from pyspark.sql import SparkSession
 from sentence_transformers import SentenceTransformer
+import torch
 import pandas as pd
 
-# Inicializar Spark
+# --- CONFIGURACIÓN ANTI-FREEZE ---
+# Limitamos Spark para que no se coma toda tu RAM de 16GB
 spark = SparkSession.builder \
-    .appName("JailbreakEmbedding_Turbo") \
-    .config("spark.driver.memory", "8g") \
-    .config("spark.executor.memory", "4g") \
+    .appName("Jailbreak_Safe_GPU") \
+    .config("spark.driver.memory", "2g") \
+    .config("spark.executor.memory", "2g") \
+    .config("spark.executor.cores", "1") \
+    .config("spark.cores.max", "2") \
     .getOrCreate()
 
-print(">>> Cargando datos procesados...")
+print(">>> [MODO SEGURO] Cargando datos...")
 df = spark.read.parquet("processed_data")
 
-# OPTIMIZACIÓN: Reparticionar según tus núcleos de CPU
-# Si tienes 8 núcleos, usa 8 o 16 particiones.
-NUM_PARTITIONS = 8 
+# --- CLAVE 1: MENOS CONCURRENCIA ---
+NUM_PARTITIONS = 2 
 df = df.repartition(NUM_PARTITIONS)
-print(f"   -> Datos repartidos en {NUM_PARTITIONS} procesos paralelos.")
+print(f"   -> Estrategia: {NUM_PARTITIONS} procesos (para evitar colapso de RAM).")
 
-def embed_partition_batch(iterator):
-    """
-    Procesa los datos en LOTES (Batches).
-    Esto es mucho más rápido que hacerlo fila por fila.
-    """
-    print(f"--- Iniciando Worker en proceso {os.getpid()} ---")
+def embed_partition_safe(iterator):
+    import torch
+    print(f"--- Iniciando Worker GPU (PID: {os.getpid()}) ---")
     
-    # Cargar el modelo una sola vez por proceso (en CPU)
-    model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
-    batch_size = 64  # Procesamos 64 textos de golpe
+    # Cargar modelo
+    model = SentenceTransformer('all-MiniLM-L6-v2', device=device)
+    
+    # --- CLAVE 2: BATCH PEQUEÑO ---
+    batch_size = 32
+    
     batch_texts = []
     batch_labels = []
     
@@ -43,39 +48,42 @@ def embed_partition_batch(iterator):
         batch_texts.append(row.text)
         batch_labels.append(row.label)
         
-        # Cuando llenamos el lote, procesamos
         if len(batch_texts) >= batch_size:
-            # La magia: encode() es vectorizado, muy rápido con listas
-            embeddings = model.encode(batch_texts, normalize_embeddings=True, show_progress_bar=False)
+            # Procesar lote
+            embeddings = model.encode(
+                batch_texts, 
+                batch_size=batch_size,
+                normalize_embeddings=True, 
+                show_progress_bar=False,
+                device=device
+            )
             
-            # Devolvemos los resultados uno por uno
             for i, emb in enumerate(embeddings):
                 yield (emb.tolist(), batch_labels[i])
             
-            count += len(batch_texts)
-            if count % 1000 == 0:
-                print(f"[Worker {os.getpid()}] Procesadas {count} filas...")
-                
-            # Limpiar lote
+            # --- CLAVE 3: DESCANSO PARA LA UI ---
+            time.sleep(0.01)
+            
+            # Limpiar memoria VRAM si es necesario (opcional, ayuda en casos extremos)
+            # torch.cuda.empty_cache() 
+            
             batch_texts = []
             batch_labels = []
             
-    # Procesar el último lote (remanente)
+            count += batch_size
+            if count % 1000 == 0:
+                print(f"[Worker {os.getpid()}] Progreso: {count} filas...")
+
+    # Procesar remanentes
     if batch_texts:
-        embeddings = model.encode(batch_texts, normalize_embeddings=True, show_progress_bar=False)
+        embeddings = model.encode(batch_texts, device=device)
         for i, emb in enumerate(embeddings):
             yield (emb.tolist(), batch_labels[i])
-        print(f"[Worker {os.getpid()}] ¡Terminado! Total: {count + len(batch_texts)}")
 
-print(">>> Iniciando Embedding Distribuido (Modo Batch)...")
-print("    (Esto puede tomar unos minutos, pero verás logs de progreso)")
-
-# MapPartitions permite manejar la iteración manualmente para hacer batching
-rdd = df.rdd.mapPartitions(embed_partition_batch)
-
-# Convertir de nuevo a DataFrame
+print(">>> Ejecutando Pipeline con Protección de UI...")
+rdd = df.rdd.mapPartitions(embed_partition_safe)
 df_embeddings = rdd.toDF(["features", "label"])
 
-print(">>> Guardando Embeddings Finales...")
+print(">>> Guardando...")
 df_embeddings.write.mode("overwrite").parquet("embeddings_final")
-print(">>> ¡Proceso Terminado Exitosamente!")
+print(">>> Terminado")
