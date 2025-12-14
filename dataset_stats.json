@@ -1,0 +1,30 @@
+{
+  "sources": {
+    "jayavibhav-safety": "https://huggingface.co/datasets/jayavibhav/prompt-injection-safety",
+    "jayavibhav-injection": "https://huggingface.co/datasets/jayavibhav/prompt-injection"
+  },
+  "raw_counts": {
+    "total_raw": 311738,
+    "by_source": {
+      "jayavibhav-injection": 261738,
+      "jayavibhav-safety": 50000
+    }
+  },
+  "deduplication": {
+    "after_basic_cleaning": 311728,
+    "exact_duplicates_removed": 46117,
+    "semantic_duplicates_removed": 232,
+    "semantic_threshold": 0.8,
+    "total_duplicates_removed": 46349
+  },
+  "final_dataset": {
+    "total_samples": 265379,
+    "jailbreak_samples": 137058,
+    "safe_samples": 128321,
+    "jailbreak_percentage": 51.65,
+    "by_source": {
+      "jayavibhav-injection": 215420,
+      "jayavibhav-safety": 49959
+    }
+  }
+}

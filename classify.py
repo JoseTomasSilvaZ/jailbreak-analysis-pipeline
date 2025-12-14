@@ -40,3 +40,4 @@ print(f"Safe probability: {probs[0]:.1%}")
 
 
 
+

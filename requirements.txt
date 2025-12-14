@@ -11,3 +11,7 @@ xgboost>=2.0.0
 hdbscan>=0.8.33
 matplotlib>=3.7.0
 tqdm
+# Enhanced analysis dependencies
+umap-learn>=0.5.5
+shap>=0.44.0
+datasketch>=1.6.0  # MinHash LSH for semantic deduplication
