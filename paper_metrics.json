@@ -1,0 +1,45 @@
+{
+  "dataset": {
+    "total_samples": 261399,
+    "jailbreak_samples": 129098,
+    "safe_samples": 132301,
+    "jailbreak_percentage": 49.39
+  },
+  "train_test_split": {
+    "train_size": 209119,
+    "test_size": 52280,
+    "test_ratio": 0.2,
+    "stratified": true,
+    "random_state": 42
+  },
+  "hyperparameter_search": {
+    "method": "RandomizedSearchCV",
+    "n_iter": 20,
+    "cv_folds": 3,
+    "scoring": "roc_auc",
+    "best_params": {
+      "learning_rate": 0.08496231729751096,
+      "max_depth": 6.0,
+      "n_estimators": 963.0,
+      "scale_pos_weight": 9.113875507308894
+    },
+    "cv_auc_mean": 0.9836,
+    "cv_auc_std": 0.0002
+  },
+  "test_metrics": {
+    "auc_roc": 0.9851,
+    "mcc": 0.849,
+    "accuracy": 0.922,
+    "precision_jailbreak": 0.8803,
+    "recall_jailbreak": 0.9747,
+    "f1_jailbreak": 0.9251,
+    "false_positive_rate": 0.1293,
+    "false_negative_rate": 0.0253
+  },
+  "confusion_matrix": {
+    "true_negatives": 23038,
+    "false_positives": 3422,
+    "false_negatives": 654,
+    "true_positives": 25166
+  }
+}

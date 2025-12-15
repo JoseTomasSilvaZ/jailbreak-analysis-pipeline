@@ -1,0 +1,8 @@
+family,clusters,attacks,percentage,keywords,strategy
+Novel Attack Pattern,376,51725,51.37309430401748,"secrets, hidden, however, game, console",Novel attack pattern
+Prompt Leaking,444,46559,46.24224065153697,"secrets, else, hidden, console, reveal",System prompt extraction
+Instruction Override,30,2115,2.1006108159110095,"previous, instructions, data, ignore, confidential",Pretexting to bypass system prompts
+Role-Play Manipulation,2,120,0.11918359239211401,"comic, muppet, muppets, else, comicbooks",Novel attack pattern
+Code Injection,4,97,0.09634007051695884,"secrets, script, hidden, flip, within",Novel attack pattern
+Mode Switching,2,44,0.043700650543775144,"passwords, health, list, chatbot, give",Privilege escalation attempt
+Scenario Engineering,1,25,0.024829915081690423,"honk, secrets, hidden, trick, circus",Novel attack pattern
